@@ -1,3 +1,5 @@
+This is a fork from prof Bhasin, description is below:
+
 Neal Bhasin
 16-745 Dynamic Optimization Term Project
 Prof. Christopher G. Atkeson
