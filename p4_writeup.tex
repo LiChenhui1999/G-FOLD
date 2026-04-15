@@ -1,0 +1,519 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue!70!black}\bfseries,
+    commentstyle=\color{gray}\itshape,
+    stringstyle=\color{green!50!black},
+    showstringspaces=false,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    frame=single,
+    language=Matlab,
+}
+
+\newcommand{\norm}[1]{\left\|#1\right\|}
+\newcommand{\bv}[1]{\bm{#1}}
+
+\title{Convex Powered--Descent Guidance:\\
+       Problem~4 (Acikmese \& Ploen) in MATLAB/CVX}
+\author{Companion note for \texttt{p4.m}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note documents the optimization problem solved by the script
+\texttt{p4.m} and explains how the MATLAB/CVX code realizes it.
+The script is a 2D implementation of \emph{Problem~4} from the
+enhanced convex formulation of the Mars powered--descent guidance
+problem by Acikmese and co--authors~\cite{Acikmese2007,Acikmese2008}.
+Given fixed initial and terminal states and a fixed total flight time
+$t_f$, the program returns a fuel--optimal thrust profile, formulated
+as a second--order cone program (SOCP) through a lossless change of
+variables and a Taylor linearization of the mass--flow bounds.
+\end{abstract}
+
+% ---------------------------------------------------------------
+\section{Problem setting}
+% ---------------------------------------------------------------
+
+A lander with dry mass $m_{\text{dry}}$ and initial wet mass
+$m_{\text{wet}}$ must be steered from an initial state
+$(\bv r_0,\bv v_0)$ to a desired terminal state $(\bv r_f,\bv v_f)$
+in a fixed flight time $t_f$, while minimizing fuel.
+The planet is Mars, modeled with a constant gravity
+vector $\bv g$.  The vehicle has $n_{\text{eng}}$ identical engines
+canted by an angle $\phi$ from the body axis; throttle is bounded
+between $\eta_{\min}$ and $\eta_{\max}$, and specific impulse
+$I_{sp}$ is constant.
+
+The numeric values used in \texttt{p4.m} are listed in
+Table~\ref{tab:params}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llr}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$m_{\text{dry}}$ & dry mass                         & $1505$\,kg \\
+$m_{\text{wet}}$ & initial wet mass                 & $1905$\,kg \\
+$I_{sp}$         & specific impulse                 & $225$\,s \\
+$g_0$            & Earth gravity constant           & $9.80665$\,m/s$^2$ \\
+$\bv g$          & Mars gravity vector              & $(0,\,-3.7114)$\,m/s$^2$ \\
+$T_{\max}$       & max total thrust at full throttle& $6\times 3100$\,N \\
+$\eta_{\min},\eta_{\max}$ & throttle limits          & $0.3,\ 0.8$ \\
+$\phi$           & thruster cant angle              & $27^\circ$ \\
+$\bv r_0$        & initial position                 & $(2000,\ 1500)$\,m \\
+$\bv v_0$        & initial velocity                 & $(100,\ -75)$\,m/s \\
+$\bv r_f,\bv v_f$& terminal state                   & $\bv 0,\ \bv 0$ \\
+$t_f$            & total flight time                & $75$\,s \\
+$\Delta t$       & discretization step              & $1$\,s \\
+$N$              & number of knot points            & $t_f/\Delta t + 1 = 76$ \\
+\bottomrule
+\end{tabular}
+\caption{Parameters used in \texttt{p4.m}.}
+\label{tab:params}
+\end{table}
+
+% ---------------------------------------------------------------
+\section{Continuous--time dynamics and lossless convexification}
+% ---------------------------------------------------------------
+
+\subsection{Original (non--convex) problem}
+
+Let $\bv r(t)\in\mathbb{R}^2$ be position, $\bv v(t)=\dot{\bv r}(t)$
+the velocity, $m(t)$ the mass, and $\bv T(t)\in\mathbb{R}^2$ the
+thrust vector.  The translational dynamics are
+\begin{align}
+\dot{\bv r} &= \bv v, \\
+m\,\dot{\bv v} &= \bv T + m\,\bv g, \\
+\dot m &= -\alpha\,\norm{\bv T}, &
+\alpha &:= \frac{1}{I_{sp}\,g_0\,\cos\phi}.
+\label{eq:alpha}
+\end{align}
+The thrust magnitude is bounded by effective min/max values obtained
+by projecting the canted engines onto the body axis,
+\begin{equation}
+\rho_1 := \eta_{\min}\,T_{\max}\cos\phi,
+\qquad
+\rho_2 := \eta_{\max}\,T_{\max}\cos\phi,
+\qquad
+\rho_1 \le \norm{\bv T(t)} \le \rho_2 .
+\label{eq:thrust_bounds}
+\end{equation}
+Fuel--minimization is equivalent to minimizing
+$\int_0^{t_f}\norm{\bv T}\,\mathrm{d}t$, or equivalently
+maximizing $m(t_f)$.
+
+This problem is non--convex because of the \emph{lower} bound
+$\norm{\bv T}\ge\rho_1$ (a non--convex annulus) and the division by
+$m$ in the velocity dynamics.
+
+\subsection{Change of variables}
+
+Following Acikmese \& Ploen, define
+\begin{equation}
+z(t) := \ln m(t),\qquad
+\bv u(t) := \frac{\bv T(t)}{m(t)},\qquad
+s(t) := \frac{\Gamma(t)}{m(t)},\qquad
+\norm{\bv T(t)}\le\Gamma(t),
+\label{eq:cov}
+\end{equation}
+where $\Gamma$ is a scalar slack on thrust magnitude.  In the new
+variables the dynamics become
+\begin{align}
+\dot{\bv r} &= \bv v, \\
+\dot{\bv v} &= \bv u + \bv g, \\
+\dot z      &= -\alpha\,s, \\
+\norm{\bv u} &\le s .
+\label{eq:soc}
+\end{align}
+Relation~\eqref{eq:soc} is a \emph{second--order cone} constraint
+and is convex.  Acikmese \& Ploen show that the relaxation
+$\norm{\bv T}\le\Gamma$ is lossless: at the optimum it holds with
+equality, so no fuel is wasted by working with $\Gamma$ instead of
+$\norm{\bv T}$.  The lower thrust bound is mapped to a bound on $s$
+that depends on mass:
+\begin{equation}
+\frac{\rho_1}{m(t)} \le s(t) \le \frac{\rho_2}{m(t)} .
+\label{eq:s_bounds_exact}
+\end{equation}
+Equation~\eqref{eq:s_bounds_exact} is still non--convex in $(z,s)$
+because $1/m=e^{-z}$ is convex in~$z$.  A conservative Taylor
+expansion around a reference $z_0$ convexifies it, as described in
+\S\ref{sec:discrete}.  The objective reduces to
+\begin{equation}
+\max\; z(t_f) \quad\Longleftrightarrow\quad \max\; m(t_f)
+\quad\Longleftrightarrow\quad \min\ \text{fuel used}.
+\end{equation}
+
+% ---------------------------------------------------------------
+\section{Discretized convex program}
+\label{sec:discrete}
+% ---------------------------------------------------------------
+
+The trajectory is discretized on $N$ equally spaced knot points
+$t_i=(i-1)\Delta t$, $i=1,\dots,N$.  Decision variables are
+\[
+\bv r_i,\bv v_i,\bv u_i\in\mathbb{R}^2,\qquad
+z_i,s_i\in\mathbb{R},\qquad i=1,\dots,N.
+\]
+
+\paragraph{Objective.}
+\begin{equation}
+\max\ z_N .
+\end{equation}
+
+\paragraph{Boundary conditions.}
+\begin{equation}
+\bv r_1=\bv r_0,\quad \bv v_1=\bv v_0,\quad z_1=\ln m_{\text{wet}},
+\qquad
+\bv r_N=\bv r_f,\quad \bv v_N=\bv v_f .
+\end{equation}
+
+\paragraph{Dynamics (trapezoidal with Simpson correction).}
+For $i=1,\dots,N-1$,
+\begin{align}
+\bv v_{i+1} &= \bv v_i + \Delta t\,\bv g
+               + \tfrac{\Delta t}{2}\bigl(\bv u_i+\bv u_{i+1}\bigr),
+\label{eq:disc_v}\\
+\bv r_{i+1} &= \bv r_i + \tfrac{\Delta t}{2}\bigl(\bv v_i+\bv v_{i+1}\bigr)
+               + \tfrac{\Delta t^2}{12}\bigl(\bv u_{i+1}-\bv u_i\bigr) .
+\label{eq:disc_r}
+\end{align}
+
+\paragraph{Mass (trapezoidal).}
+For $i=1,\dots,N-1$,
+\begin{equation}
+z_{i+1} = z_i - \tfrac{\alpha\,\Delta t}{2}\bigl(s_i+s_{i+1}\bigr) .
+\label{eq:disc_z}
+\end{equation}
+
+\paragraph{Thrust magnitude (SOC).}
+For $i=1,\dots,N$,
+\begin{equation}
+\norm{\bv u_i} \le s_i .
+\label{eq:disc_soc}
+\end{equation}
+
+\paragraph{Taylor bounds on $s$.}
+Let $z_{0,i}$ be a reference value of $z$ corresponding to the
+\emph{maximum--thrust} mass history and $z_{1,i}$ the
+\emph{minimum--thrust} one:
+\begin{align}
+z_{0,i} &:= \ln\!\bigl(m_{\text{wet}}-\alpha\,\rho_2\,(i-1)\Delta t\bigr),
+\\
+z_{1,i} &:= \ln\!\bigl(m_{\text{wet}}-\alpha\,\rho_1\,(i-1)\Delta t\bigr),
+\\
+\mu_{1,i} &:= \frac{\rho_1}{m_{\text{wet}}-\alpha\,\rho_2\,(i-1)\Delta t}
+           = \rho_1\,e^{-z_{0,i}},
+\\
+\mu_{2,i} &:= \frac{\rho_2}{m_{\text{wet}}-\alpha\,\rho_2\,(i-1)\Delta t}
+           = \rho_2\,e^{-z_{0,i}} .
+\end{align}
+The convex lower and linear upper bounds on $s_i$ are
+\begin{align}
+s_i &\ge \mu_{1,i}\Bigl[1-(z_i-z_{0,i})+\tfrac{1}{2}(z_i-z_{0,i})^2\Bigr],
+\label{eq:taylor_lo}\\
+s_i &\le \mu_{2,i}\Bigl[1-(z_i-z_{0,i})\Bigr],
+\label{eq:taylor_hi}
+\end{align}
+together with the physical envelope on $z$,
+\begin{equation}
+z_{0,i}\le z_i \le z_{1,i} .
+\label{eq:z_env}
+\end{equation}
+Inequality~\eqref{eq:taylor_lo} is a conservative under--approximation
+of $\rho_1/m$ (quadratic lower bound of a convex function gives a
+convex constraint); \eqref{eq:taylor_hi} is an over--approximation of
+$\rho_2/m$ by its tangent line at $z_{0,i}$ (a linear upper bound of
+a convex function is convex).  Together they keep the feasible set
+convex while tightly tracking the true bounds~\eqref{eq:s_bounds_exact}.
+
+\paragraph{Subsurface constraint (active).}
+To forbid flight below the landing pad,
+\begin{equation}
+r_i^{(2)} \ge -1 \qquad (i=1,\dots,N),
+\label{eq:subsurface}
+\end{equation}
+with $r^{(2)}$ the vertical component.  (The $-1$\,m margin is the
+value hard--coded in the script.)
+
+% ---------------------------------------------------------------
+\section{Optional constraints (disabled in \texttt{p4.m})}
+% ---------------------------------------------------------------
+
+Two additional convex constraints are present in the source but
+commented out.  They are included in the formulation here for
+completeness.
+
+\paragraph{Thrust--pointing cone.}
+Restricting the thrust vector to lie within a half--cone of
+aperture $\theta$ around the vertical,
+\begin{equation}
+u_i^{(2)} \ge s_i\,\cos\theta
+\qquad (i=1,\dots,N) .
+\label{eq:pointing}
+\end{equation}
+
+\paragraph{Glide--slope constraint.}
+Keeping the vehicle inside a cone of slope $\gamma$ anchored at
+the landing site,
+\begin{equation}
+r_i^{(1)} \le \frac{r_i^{(2)}}{\tan\gamma}
+\qquad (i=1,\dots,N) .
+\label{eq:glideslope}
+\end{equation}
+
+In \texttt{p4.m} these are the lines that would activate them, but
+they are commented out in the current run.
+
+% ---------------------------------------------------------------
+\section{MATLAB/CVX implementation walkthrough}
+% ---------------------------------------------------------------
+
+The entire program lives in a single self--contained script
+\texttt{p4.m}.  It has no dependencies on the other MATLAB files in
+this repository except for \texttt{plot\_run2D.m}, which is called
+at the end only to visualize the results.
+
+\subsection{Parameter block}
+
+Lines 14--35 declare the numeric values listed in
+Table~\ref{tab:params} and pre--compute the constants
+$\alpha$, $\rho_1$ and $\rho_2$ defined
+by~\eqref{eq:alpha}--\eqref{eq:thrust_bounds}:
+
+\begin{lstlisting}
+alpha = 1 / (Isp * g0 * cosd(phi));
+r1 = min_throttle * T_max * cosd(phi);
+r2 = max_throttle * T_max * cosd(phi);
+\end{lstlisting}
+
+\subsection{Decision variables and objective}
+
+Inside the CVX block, five trajectory arrays are declared and
+$z_N$ is chosen as the objective:
+
+\begin{lstlisting}
+cvx_solver SEDUMI
+cvx_begin
+    variables r(2,N) v(2,N) u(2,N) z(1,N) s(1,N)
+    maximize( z(N) )
+    subject to
+        ...
+cvx_end
+\end{lstlisting}
+
+\subsection{Constraint loops}
+
+The constraints are split across two \texttt{for}--loops:
+
+\begin{itemize}
+\item A \textbf{dynamics loop} over $i=1,\dots,N-1$ encoding
+      \eqref{eq:disc_v}, \eqref{eq:disc_r} and \eqref{eq:disc_z}.
+\item A \textbf{pointwise loop} over $i=1,\dots,N$ encoding
+      the SOC constraint~\eqref{eq:disc_soc}, the Taylor
+      bounds~\eqref{eq:taylor_lo}--\eqref{eq:taylor_hi}, and the
+      mass envelope~\eqref{eq:z_env}.  Inside this loop the
+      reference quantities $z_{0,i}$, $z_{1,i}$, $\mu_{1,i}$ and
+      $\mu_{2,i}$ are recomputed every iteration from the current
+      index~$i$.
+\end{itemize}
+
+The boundary conditions and the subsurface
+constraint~\eqref{eq:subsurface} are vectorized one--liners
+outside the loops.  The pointing~\eqref{eq:pointing} and
+glide--slope~\eqref{eq:glideslope} constraints are present as
+commented--out lines.
+
+\subsection{Post--processing}
+
+After \texttt{cvx\_end}, the script recovers the mass profile
+$m_i = e^{z_i}$ and hands the result to the plotting helper:
+
+\begin{lstlisting}
+m_vals = exp(z);
+plot_run2D(tv, r, v, u, m_vals);
+\end{lstlisting}
+
+\texttt{plot\_run2D} produces six figures: position vs.\ time,
+velocity vs.\ time, the 2D trajectory with thrust quiver, the
+per--axis acceleration, the thrust magnitude, and the acceleration
+magnitude.
+
+% ---------------------------------------------------------------
+\section{How to run}
+% ---------------------------------------------------------------
+
+\begin{enumerate}
+\item Install \textbf{MATLAB} and the \textbf{CVX}
+      modeling toolbox~\cite{cvx} with the SeDuMi solver enabled
+      (\texttt{cvx\_solver SEDUMI}).
+\item From the repository root, run
+\begin{lstlisting}[numbers=none]
+>> p4
+\end{lstlisting}
+\item Expected output: the CVX solver log, followed by six figure
+      windows generated by \texttt{plot\_run2D}.  The optimal
+      trajectory reproduces Figure~6 of~\cite{Acikmese2007}.
+\end{enumerate}
+
+% ---------------------------------------------------------------
+\section{Extension to three dimensions}
+\label{sec:3d}
+% ---------------------------------------------------------------
+
+This section documents how the convex formulation of
+\S\ref{sec:discrete} extends to a full three--dimensional landing
+problem.  No 3D implementation is shipped in the current
+repository; the material below specifies the mathematical form to
+be used by a future \texttt{p4\_3D.m}.
+
+\subsection{Coordinate conventions}
+
+Let $\bv r(t),\bv v(t),\bv u(t)\in\mathbb{R}^3$, with the
+convention that $\bv e_3$ points vertically upward.  The Mars
+gravity vector becomes
+\begin{equation}
+\bv g = (0,\,0,\,-3.7114)\ \text{m/s}^2 .
+\end{equation}
+Note that Acikmese \& Ploen~\cite{Acikmese2007} use $\bv e_1$ as
+the radial (vertical) axis; this note adopts the engineering
+convention $\bv e_3$ instead so that the 3D code can be obtained
+from \texttt{p4.m} by promoting the vertical slot consistently
+(the 2D script treats \texttt{r(2,:)} as vertical).
+
+\subsection{Continuous--time dynamics}
+
+The change of variables of \S2.2 carries over unchanged; only the
+translational state is promoted to $\mathbb{R}^3$, while the
+logarithmic mass $z$ and the thrust slack $s$ remain scalar:
+\begin{align}
+\dot{\bv r} &= \bv v, &
+\dot{\bv v} &= \bv u + \bv g, \\
+\dot z      &= -\alpha\,s, &
+\norm{\bv u} &\le s .
+\end{align}
+The lossless convexification argument and the Taylor
+bounds~\eqref{eq:taylor_lo}--\eqref{eq:taylor_hi} on $s$ are
+dimension--independent and apply verbatim.
+
+\subsection{Discretized 3D convex program}
+
+Decision variables on the same $N$ knot points as in
+\S\ref{sec:discrete} are
+\[
+\bv r_i,\bv v_i,\bv u_i\in\mathbb{R}^3,\qquad
+z_i,s_i\in\mathbb{R},\qquad i=1,\dots,N.
+\]
+The objective ($\max\ z_N$), the boundary conditions, the
+trapezoidal dynamics~\eqref{eq:disc_v}--\eqref{eq:disc_r}, the
+mass update~\eqref{eq:disc_z}, the Taylor
+bounds~\eqref{eq:taylor_lo}--\eqref{eq:taylor_hi}, and the mass
+envelope~\eqref{eq:z_env} are identical in form; only the
+vector variables now carry a third component.
+
+\paragraph{Thrust magnitude (SOC, $\mathbb{R}^3$).}
+\begin{equation}
+\norm{\bv u_i}\le s_i\qquad(i=1,\dots,N),
+\end{equation}
+a 3D second--order cone directly supported by CVX/SeDuMi.
+
+\paragraph{Subsurface constraint.}
+\begin{equation}
+r_i^{(3)} \ge -1\qquad(i=1,\dots,N) .
+\end{equation}
+
+\paragraph{Thrust--pointing cone.}
+A half--cone of aperture $\theta$ around the vertical becomes
+\begin{equation}
+u_i^{(3)} \ge s_i\,\cos\theta\qquad(i=1,\dots,N).
+\end{equation}
+
+\paragraph{Axisymmetric glide--slope cone (SOC).}
+Keeping the vehicle inside an axisymmetric cone of slope $\gamma$
+anchored at the landing site generalizes~\eqref{eq:glideslope} to
+\begin{equation}
+\sqrt{\bigl(r_i^{(1)}\bigr)^2+\bigl(r_i^{(2)}\bigr)^2}
+  \;\le\; \frac{r_i^{(3)}}{\tan\gamma}
+\qquad(i=1,\dots,N),
+\label{eq:glideslope3d}
+\end{equation}
+which is a second--order cone constraint and thus convex.
+
+\subsection{Example 3D parameters}
+
+Table~\ref{tab:params3d} lists a suggested 3D initial/terminal
+state; the remaining vehicle and discretization parameters are
+inherited from Table~\ref{tab:params} to permit direct comparison
+with the 2D run.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llr}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$\bv r_0$        & initial position      & $(2000,\ 500,\ 1500)$\,m \\
+$\bv v_0$        & initial velocity      & $(100,\ 50,\ -75)$\,m/s \\
+$\bv r_f,\bv v_f$& terminal state        & $\bv 0,\ \bv 0$ \\
+$\bv g$          & Mars gravity vector   & $(0,\ 0,\ -3.7114)$\,m/s$^2$ \\
+$\theta$         & pointing half--angle  & $50^\circ$ \\
+$\gamma$         & glide--slope angle    & $4^\circ$ \\
+\bottomrule
+\end{tabular}
+\caption{Suggested 3D boundary conditions and cone angles; all
+other parameters ($m_{\text{dry}},m_{\text{wet}},I_{sp},T_{\max},
+\eta_{\min},\eta_{\max},\phi,t_f,\Delta t,N$) are taken from
+Table~\ref{tab:params}.  These values are indicative and are not
+produced by any script in the current repository.}
+\label{tab:params3d}
+\end{table}
+
+\subsection{Remarks}
+
+Because the lossless convexification structure is
+dimension--independent, the 3D program is still a standard SOCP
+and can be solved by SeDuMi with only a modest increase in
+problem size ($3N$ additional primal variables versus the 2D
+case).  Visualization of the 3D trajectory is out of scope here
+and would require a companion script \texttt{plot\_run3D.m}
+replacing \texttt{plot\_run2D.m}.
+
+% ---------------------------------------------------------------
+\begin{thebibliography}{9}
+
+\bibitem{Acikmese2007}
+B.~Acikmese and S.~R.~Ploen.
+\newblock Convex programming approach to powered descent guidance
+         for Mars landing.
+\newblock \emph{Journal of Guidance, Control, and Dynamics},
+         30(5):1353--1366, 2007.
+
+\bibitem{Acikmese2008}
+B.~Acikmese, L.~Blackmore, D.~P.~Scharf, and A.~Wolf.
+\newblock Enhancements on the convex programming based powered
+         descent guidance algorithm for Mars landing.
+\newblock In \emph{AIAA/AAS Astrodynamics Specialist Conference},
+         2008.
+
+\bibitem{cvx}
+M.~Grant and S.~Boyd.
+\newblock CVX: MATLAB software for disciplined convex programming.
+\newblock \url{http://cvxr.com/cvx/}.
+
+\end{thebibliography}
+
+\end{document}

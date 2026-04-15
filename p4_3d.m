@@ -1,45 +1,39 @@
-% Neal Bhasin
-% 2015-04-10
-% Implementation of convex programming algorithm for powered descent guidance.
+% 3D extension of p4.m: convex powered-descent guidance in R^3.
+% Companion implementation to Section 6 of p4_writeup.tex.
 % Note: This script requires an installation of MATLAB CVX.
 
 % Primary reference:
-% [1] Acikmese, Behcet, and Scott R. Ploen. "Convex programming approach to 
-% powered descent guidance for mars landing." 
+% [1] Acikmese, Behcet, and Scott R. Ploen. "Convex programming approach to
+% powered descent guidance for mars landing."
 % Journal of Guidance, Control, and Dynamics 30.5 (2007): 1353-1366.
-% [2] Acikmese, Behcet, et al. "Enhancements on the convex programming based 
+% [2] Acikmese, Behcet, et al. "Enhancements on the convex programming based
 % powered descent guidance algorithm for mars landing." (2008).
 
 close all;clc;clear;
 
 % Vehicle fixed parameters
-m_dry = 1505;       % Vehicle mass without fuel [kg]
-Isp = 225;          % Specific impulse [s]
-g0 = 9.80665;       % Standard earth gravity [m/s^2]
-g = [0 ; -3.7114];  % Mars gravity vector [m/s^2]
-max_throttle = 0.8; % Max open throttle [.%]
-min_throttle = 0.3; % Min open throttle [.%]
-T_max = 6 * 3100;   % Max total thrust force at 1.0 throttle [N]
-phi = 27;           % The cant angle of thrusters [deg]
+m_dry = 1505;            % Vehicle mass without fuel [kg]
+Isp = 225;               % Specific impulse [s]
+g0 = 9.80665;            % Standard earth gravity [m/s^2]
+g = [0 ; 0 ; -3.7114];   % Mars gravity vector, e3 vertical [m/s^2]
+max_throttle = 0.8;      % Max open throttle [.%]
+min_throttle = 0.3;      % Min open throttle [.%]
+T_max = 6 * 3100;        % Max total thrust force at 1.0 throttle [N]
+phi = 27;                % The cant angle of thrusters [deg]
 
 % Initial conditions
-m_wet = 1905;           % Vehicle mass with fuel [kg]
-r0 = [  2 ; 1.5] * 1e3; % Initial position [x;z] [m]
-v0 = [100 ; -75];       % Initial velocity [x;z] [m/s]
+m_wet = 1905;                    % Vehicle mass with fuel [kg]
+r0 = [1000 ;  500 ; 1500];       % Initial position [x;y;z] [m]
+v0 = [ 20 ;   50 ;  -75];       % Initial velocity [x;y;z] [m/s]
 
 % Target conditions
-rf = [ 0 ; 0 ];
-vf = [ 0 ; 0 ];
+rf = [0 ; 0 ; 0];
+vf = [0 ; 0 ; 0];
 
 tf = 75;  % Target end time [s]
 dt = 1.0; % Discrete node time interval [s]
 N = (tf / dt) + 1;
 tv = 0:dt:tf;
-
-% Description: Implementation of Problem 4 of [2]. Solves the fuel
-%  optimal landing divert given intial and desired terminal conditions.
-%  Uses a fixed total flight time and discretization and disallows subsurface
-%  flight. Results correspond with Figure 6 of [1].
 
 % z === ln m
 % u === T / m
@@ -49,13 +43,13 @@ alpha = 1 / (Isp * g0 * cosd(phi));
 r1 = min_throttle * T_max * cosd(phi);
 r2 = max_throttle * T_max * cosd(phi);
 
-cvx_solver SEDUMI
+cvx_solver SDPT3
 cvx_begin
     % Parameterize trajectory position, velocity, thrust acceleration, ln mass
-    variables r(2,N) v(2,N) u(2,N) z(1,N) s(1,N)
+    variables r(3,N) v(3,N) u(3,N) z(1,N) s(1,N)
     % Maximize ln of final mass -> Minimize fuel used
     maximize( z(N) )
-    
+
     subject to
         % Initial condition constraints
         r(:,1) == r0;
@@ -90,17 +84,23 @@ cvx_begin
             z(i) >= z0;
             z(i) <= z1;
         end
-        % Thrust pointing constraint
+        % Thrust pointing constraint (half-cone about e3)
         theta = 50;
-        u(2,:) >= s .* cosd(theta);
+        u(3,:) >= s .* cosd(theta);
         % No sub-surface flight
-        r(2,:) >= -1;
-        % Glide-slope surface constraint
+        r(3,:) >= -1;
+        % Axisymmetric glide-slope cone, with apex shifted h meters below
+        % the pad so r(:,N)=0 sits strictly inside the cone. Without the
+        % shift the SOC collapses onto its apex near the terminal nodes
+        % and SeDuMi fails at iter 0.
         slope = 4;
-        r(1,:) <= r(2,:) / tand(slope);
+        h = 1;
+        for i=1:N
+            norm(r(1:2,i)) <= (r(3,i) + h) / tand(slope);
+        end
 cvx_end
 
 % Plotting
 
 m_vals = exp(z);
-plot_run2D(tv,r,v,u,m_vals);
+plot_run3D(tv,r,v,u,m_vals);
