@@ -13,12 +13,12 @@ from importlib.metadata import version, PackageNotFoundError
 #   min_ver / max_ver_exclusive : None means no bound
 #   pip_install_spec            : string passed to pip (can include version pin)
 REQUIRED = [
-    # ecos C extensions are compiled against NumPy 1.x; NumPy 2.x breaks them
-    ("numpy",      "numpy",      "1.20.0", "2.0.0",  "numpy<2"),
+    ("numpy",      "numpy",      "1.20.0", None,     "numpy"),
     # cvxpy <1.3 imports scipy.misc.logsumexp, removed in scipy 1.0
     ("cvxpy",      "cvxpy",      "1.3.0",  None,     "cvxpy"),
-    ("ecos",       "ecos",       None,     None,     "ecos"),        # fallback solver
-    ("clarabel",   "clarabel",   None,     None,     "clarabel"),    # primary solver
+    # ("ecos",       "ecos",       None,     None,     "ecos"),      # p4_3d.py未使用ecos求解器
+    # ("clarabel",   "clarabel",   None,     None,     "clarabel"),  # clarabel随cvxpy自动安装，无需单独检查
+    # ("Mosek",      "mosek",      None,     None,     "mosek"),     # 暂时用不到mosek了，兼容性很麻烦（需要手动配置license）
     ("matplotlib", "matplotlib", "3.3.0",  None,     "matplotlib"),
 ]
 

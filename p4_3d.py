@@ -44,77 +44,82 @@ alpha = 1.0 / (Isp * g0 * np.cos(np.deg2rad(phi)))
 r1    = min_throttle * T_max * np.cos(np.deg2rad(phi))  # lower thrust bound [N]
 r2    = max_throttle * T_max * np.cos(np.deg2rad(phi))  # upper thrust bound [N]
 
-# ---- CVXPY variables ----
-r = cp.Variable((3, N))  # position [m]
-v = cp.Variable((3, N))  # velocity [m/s]
-u = cp.Variable((3, N))  # thrust acceleration [m/s^2]
-z = cp.Variable(N)       # ln(mass) [nats]
-s = cp.Variable(N)       # surrogate slack: |u[:,i]| <= s[i]
+# ---- Non-dimensionalization scales ----
+L_sc = np.linalg.norm(r0)               # characteristic length  [m]
+V_sc = np.linalg.norm(v0)               # characteristic velocity [m/s]
+A_sc = r2 / m_wet                       # characteristic acceleration [m/s^2]
+g_nd = g / A_sc                         # non-dim gravity
 
-# ---- Objective: maximize ln of final mass, with thrust-rate regularization ----
-# Small penalty on ||u[:,i+1] - u[:,i]||^2 breaks non-uniqueness on the optimal
-# face and selects the smoothest thrust profile. lam should be small enough
-# that final mass is essentially unchanged.
-lam = 1e-4
-du  = u[:, 1:] - u[:, :-1]            # shape (3, N-1)
-objective = cp.Maximize(z[N - 1] - lam * cp.sum_squares(du))
+# ---- CVXPY variables (all non-dimensional) ----
+r = cp.Variable((3, N))  # position / L_sc
+v = cp.Variable((3, N))  # velocity / V_sc
+u = cp.Variable((3, N))  # thrust accel / A_sc
+z = cp.Variable(N)       # ln(mass) [nats] (already ~O(1))
+s = cp.Variable(N)       # surrogate slack / A_sc
+
+# ---- Objective ----
+# lam = 1e-4
+# du  = u[:, 1:] - u[:, :-1]
+# objective = cp.Maximize(z[N - 1] - lam * A_sc**2 * cp.sum_squares(du))
+objective = cp.Maximize(z[N - 1])
 
 constraints = []
 
-# ---- Boundary conditions ----
+# ---- Boundary conditions (non-dim) ----
 constraints += [
-    r[:, 0]     == r0,
-    v[:, 0]     == v0,
+    r[:, 0]     == r0 / L_sc,
+    v[:, 0]     == v0 / V_sc,
     z[0]        == np.log(m_wet),
-    r[:, N - 1] == rf,
-    v[:, N - 1] == vf,
+    r[:, N - 1] == rf / L_sc,
+    v[:, N - 1] == vf / V_sc,
 ]
 
-# ---- Dynamics (trapezoidal integration) ----
+# ---- Dynamics (trapezoidal, non-dim) ----
 for i in range(N - 1):
     constraints += [
-        v[:, i + 1] == v[:, i] + dt * g + (dt / 2) * (u[:, i] + u[:, i + 1]),
-        r[:, i + 1] == (r[:, i]
-                        + (dt / 2)    * (v[:, i] + v[:, i + 1])
-                        + (dt**2 / 12) * (u[:, i + 1] - u[:, i])),
-        z[i + 1]    == z[i] - (alpha * dt / 2) * (s[i] + s[i + 1]),
+        v[:, i + 1] == v[:, i]
+            + (dt * A_sc / V_sc) * g_nd
+            + (dt * A_sc / (2 * V_sc)) * (u[:, i] + u[:, i + 1]),
+        r[:, i + 1] == r[:, i]
+            + (dt * V_sc / (2 * L_sc)) * (v[:, i] + v[:, i + 1])
+            + (dt**2 * A_sc / (12 * L_sc)) * (u[:, i + 1] - u[:, i]),
+        z[i + 1] == z[i] - (alpha * A_sc * dt / 2) * (s[i] + s[i + 1]),
     ]
 
 # ---- Thrust magnitude and mass flow limits ----
 for i in range(N):
-    # Feasible Taylor expansion reference point (scalar Python constants)
     z0_term = m_wet - alpha * r2 * i * dt
     z1_term = m_wet - alpha * r1 * i * dt
     z0      = np.log(z0_term)
     z1      = np.log(z1_term)
-    mu_1    = r1 / z0_term
-    mu_2    = r2 / z0_term
+    mu_1    = r1 / z0_term          # [m/s^2]
+    mu_2    = r2 / z0_term          # [m/s^2]
 
-    dz = z[i] - z0  # affine CVXPY expression
+    dz = z[i] - z0
 
     constraints += [
-        cp.norm(u[:, i]) <= s[i],                            # SOC (|u| <= s)
-        s[i] >= mu_1 * (1 - dz + 0.5 * cp.square(dz)),      # quadratic lower bound
-        s[i] <= mu_2 * (1 - dz),                             # linear upper bound
-        z[i] >= z0,                                          # mass floor
-        z[i] <= z1,                                          # mass ceiling
+        cp.norm(u[:, i]) <= s[i],                                       # SOC
+        s[i] >= (mu_1 / A_sc) * (1 - dz + 0.5 * cp.square(dz)),        # lower
+        s[i] <= (mu_2 / A_sc) * (1 - dz),                              # upper
+        z[i] >= z0,
+        z[i] <= z1,
     ]
 
-# ---- Thrust pointing constraint (half-cone angle about vertical) ----
+# ---- Thrust pointing constraint ----
 theta = 50  # deg
 constraints += [
-    u[2, :] >= s * np.cos(np.deg2rad(theta)),  # element-wise over all N nodes
+    u[2, :] >= s * np.cos(np.deg2rad(theta)),
 ]
 
 # ---- No sub-surface flight ----
-constraints += [r[2, :] >= -1]
+constraints += [r[2, :] >= -1.0 / L_sc]
 
-# ---- Glide-slope cone (apex shifted h m below pad to avoid SOC collapse) ----
+# ---- Glide-slope cone ----
 slope = 4   # deg
 h     = 1   # m
 for i in range(N):
     constraints += [
-        cp.norm(r[0:2, i]) <= (r[2, i] + h) / np.tan(np.deg2rad(slope)),
+        cp.norm(r[0:2, i]) <= (r[2, i] + h / L_sc) / np.tan(np.deg2rad(slope)),
     ]
 
 # ---- Solve ----
@@ -128,11 +133,11 @@ print(f"\nStatus     : {problem.status}")
 print(f"Final z(N) : {z.value[N-1]:.6f}")
 print(f"Fuel used  : {m_wet - np.exp(z.value[N-1]):.2f} kg")
 
-# ---- Post-processing ----
-r_vals  = r.value                    # (3, N)
-v_vals  = v.value                    # (3, N)
-u_vals  = u.value                    # (3, N)
-z_vals  = z.value                    # (N,)
+# ---- Post-processing: restore physical units ----
+r_vals  = r.value * L_sc                # (3, N) [m]
+v_vals  = v.value * V_sc                # (3, N) [m/s]
+u_vals  = u.value * A_sc                # (3, N) [m/s^2]
+z_vals  = z.value                       # (N,)   [nats]
 
 m_vals   = np.exp(z_vals)
 u_norms  = np.linalg.norm(u_vals, axis=0)   # column norms, shape (N,)
