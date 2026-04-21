@@ -1,6 +1,7 @@
 # 3D convex powered-descent guidance in R^3.
 # Python translation of p4_3d.m + plot_run3D.m.
 # Requires: numpy, cvxpy, ecos, matplotlib
+# 首次运行前可以先运行 check_deps.py 来检查和自动安装所需库
 #
 # Primary reference:
 # [1] Acikmese & Ploen, "Convex programming approach to powered descent
