@@ -1,0 +1,263 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{green!40!black}\itshape,
+  stringstyle=\color{orange!80!black},
+  showstringspaces=false,
+  language=Python,
+}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\tr}{^{\mathsf{T}}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+\title{Finding the Optimal Time of Flight $t_f$ \\
+       in 3D Convex Powered-Descent Guidance}
+\author{\texttt{p4\_3d\_tf\_opti.py}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Problem structure}
+
+The G-FOLD fuel-optimal soft landing problem can be formulated as a bi-level
+optimization. With a fixed time of flight $t_f$, the problem reduces to a
+second-order cone program (SOCP) after the lossless convexification of
+Acikmese and Ploen. The outer problem searches over $t_f$:
+%
+\begin{equation}
+  t_f^\star \;=\; \argmin_{t_f \in [\,t_f^{\min},\,t_f^{\max}\,]} \; J(t_f),
+  \qquad
+  J(t_f) \;=\; m_{\text{wet}} - \exp\!\bigl(z_N^\star(t_f)\bigr),
+  \label{eq:outer}
+\end{equation}
+%
+where $z = \ln m$ is the logarithmic mass state and $z_N^\star(t_f)$ is the
+optimal terminal log-mass returned by the inner SOCP at the chosen $t_f$.
+Because the inner problem maximizes $z_N$, the negative exponential
+$-\exp(z_N^\star)$ is the fuel consumed; $J(t_f)$ is therefore directly the
+fuel used (in kg) as a function of the time of flight.
+
+The function $J(t_f)$ is known empirically to be \emph{unimodal} on the feasible
+interval: short flight times waste fuel fighting inertia and gravity, while
+long flight times waste fuel supporting the vehicle against gravity
+(``gravity loss''). There is a single interior minimum. This property is what
+enables the outer loop to use a derivative-free unimodal search.
+
+\section{Bounds on $t_f$}
+
+The search interval $[t_f^{\min},\,t_f^{\max}]$ is derived from physical
+consistency rather than optimality, and is taken from the reference MATLAB
+implementation \texttt{GFOLD.m}:
+%
+\begin{align}
+  t_f^{\min} &= \frac{m_{\text{dry}} \,\lVert \bm{v}_f - \bm{v}_0 \rVert}{\rho_2},
+  \label{eq:tfmin}\\[2pt]
+  t_f^{\max} &= \frac{m_{\text{wet}} - m_{\text{dry}}}{\alpha\,\rho_1},
+  \label{eq:tfmax}
+\end{align}
+%
+where $\rho_1 = T_{\min}\cos\phi$ and $\rho_2 = T_{\max}\cos\phi$ are the lower
+and upper bounds on the axial thrust after accounting for the thruster cant
+angle $\phi$, and $\alpha = 1/(I_{sp} g_0 \cos\phi)$ is the mass-flow
+coefficient.
+
+\paragraph{Interpretation.} Equation~\eqref{eq:tfmin} is an impulse bound:
+even at maximum thrust applied entirely to the dry vehicle, reversing the
+velocity difference $\bm{v}_f - \bm{v}_0$ requires at least $t_f^{\min}$
+seconds. Equation~\eqref{eq:tfmax} is the burn-time bound: the fuel reserve
+$m_{\text{wet}} - m_{\text{dry}}$ cannot sustain more than
+$(m_{\text{wet}}-m_{\text{dry}})/(\alpha\rho_1)$ seconds of firing even at the
+minimum throttle setting.
+
+\section{The inner convex subproblem}
+
+For a fixed $t_f$, the horizon is uniformly discretized into $N$ nodes with
+step $\Delta t = t_f/(N-1)$. Decision variables, all non-dimensionalized by
+characteristic scales $(L_{sc}, V_{sc}, A_{sc})$, are
+$\bm{r}_i \in \R^3$, $\bm{v}_i \in \R^3$, $\bm{u}_i \in \R^3$,
+$z_i \in \R$, and $s_i \in \R$, for $i = 0, \dots, N-1$, where
+$\bm{u} = \bm{T}/m$ is the mass-normalized thrust and $s$ is the lossless
+convexification slack ($\lVert \bm{u}\rVert \le s$).
+
+The inner problem is
+\begin{equation}
+\begin{aligned}
+  &\max_{\bm{r},\bm{v},\bm{u},z,s} \;\; z_{N-1} \\
+  \text{s.t.}\quad
+    & \bm{v}_{i+1} = \bm{v}_i + \Delta t \,\bm{g} + \tfrac{\Delta t}{2}(\bm{u}_i + \bm{u}_{i+1}),\\
+    & \bm{r}_{i+1} = \bm{r}_i + \tfrac{\Delta t}{2}(\bm{v}_i + \bm{v}_{i+1})
+                    + \tfrac{\Delta t^2}{12}(\bm{u}_{i+1} - \bm{u}_i),\\
+    & z_{i+1} = z_i - \tfrac{\alpha\,\Delta t}{2}(s_i + s_{i+1}),\\
+    & \lVert \bm{u}_i \rVert \le s_i, \qquad u_{i,3} \ge s_i \cos\theta,\\
+    & s_i \ge \mu_{1,i}\bigl(1 - (z_i - z_{0,i}) + \tfrac{1}{2}(z_i - z_{0,i})^2\bigr),\\
+    & s_i \le \mu_{2,i}\bigl(1 - (z_i - z_{0,i})\bigr),\\
+    & z_{0,i} \le z_i \le z_{1,i},\\
+    & \lVert (r_{i,1},\,r_{i,2}) \rVert \le (r_{i,3} + h_{gs})/\tan\gamma_{gs},\\
+    & \bm{r}_0 = \bm{r}_0^{\text{IC}},\; \bm{v}_0 = \bm{v}_0^{\text{IC}},\;
+      z_0 = \ln m_{\text{wet}},\;
+      \bm{r}_{N-1} = \bm{r}_f,\; \bm{v}_{N-1} = \bm{v}_f.
+\end{aligned}
+\label{eq:inner}
+\end{equation}
+
+\noindent The node-wise quantities that depend on $t_f$ are
+\begin{equation}
+  z_{0,i} = \ln\bigl(m_{\text{wet}} - \alpha\rho_2\, i\,\Delta t\bigr),\quad
+  z_{1,i} = \ln\bigl(m_{\text{wet}} - \alpha\rho_1\, i\,\Delta t\bigr),\quad
+  \mu_{k,i} = \frac{\rho_k}{m_{\text{wet}} - \alpha\rho_2\, i\,\Delta t}.
+  \label{eq:nodeparams}
+\end{equation}
+%
+If any $z_{0,i}$ or $z_{1,i}$ is non-positive, the candidate $t_f$ consumes
+more propellant than is available and is declared \emph{a priori} infeasible.
+In that case $J(t_f) = +\infty$ is returned.
+
+\section{Outer search: golden-section}
+
+Since $J(t_f)$ is unimodal and each evaluation requires a full SOCP solve,
+the code performs derivative-free unimodal minimization via a
+\emph{golden-section search}. The search maintains a bracket
+$[a, b] \subseteq [t_f^{\min},\,t_f^{\max}]$ containing the minimizer and
+two interior test points placed at
+%
+\begin{equation}
+  x_1 = b - \varphi^{-1}(b - a),
+  \qquad
+  x_2 = a + \varphi^{-1}(b - a),
+  \qquad
+  \varphi^{-1} \;=\; \frac{\sqrt{5}-1}{2} \approx 0.6180,
+  \label{eq:gsspoints}
+\end{equation}
+%
+where $\varphi$ is the golden ratio. The corresponding fuel costs
+$f_1 = J(x_1)$, $f_2 = J(x_2)$ are compared:
+%
+\begin{equation}
+  \text{if } f_1 < f_2 \Rightarrow
+    \begin{cases}
+      b \leftarrow x_2,\ x_2 \leftarrow x_1,\ f_2 \leftarrow f_1\\
+      x_1 \leftarrow b - \varphi^{-1}(b-a),\ f_1 \leftarrow J(x_1)
+    \end{cases}
+  \qquad \text{else (symmetric).}
+  \label{eq:gssupdate}
+\end{equation}
+%
+Each iteration discards one of the two subintervals
+$[a, x_1]$ or $[x_2, b]$ and \emph{reuses one of the two function values}
+from the previous iteration, so only one new SOCP solve is required per
+outer step. The interval length contracts by exactly $\varphi^{-1}$ per
+iteration:
+%
+\begin{equation}
+  b_{k+1} - a_{k+1} \;=\; \varphi^{-1}\,(b_k - a_k),
+  \qquad
+  b_k - a_k = \varphi^{-k}(b_0 - a_0).
+\end{equation}
+%
+The loop terminates when $b - a \le \texttt{tol}$ (the code uses
+$\texttt{tol}=0.5\,\text{s}$), and the returned estimate is
+%
+\begin{equation}
+  \hat t_f^\star \;=\; \tfrac{1}{2}(a + b).
+\end{equation}
+%
+The number of inner SOCP solves is bounded by
+$\lceil \log_{\varphi}\!\bigl((b_0 - a_0)/\texttt{tol}\bigr) \rceil + 2$,
+which is typically 20--25 for landing horizons on the order of tens of
+seconds.
+
+\section{Warm-starting across outer iterations}
+
+Every outer step changes $t_f$ and therefore the numerical values of the
+per-node parameters in~\eqref{eq:nodeparams}. Re-building the full SOCP from
+scratch each time is wasteful. The implementation uses two layers of reuse.
+
+\paragraph{1. DPP parametrization (CVXPY layer).} All $t_f$-dependent
+quantities are declared as \texttt{cp.Parameter} objects rather than plain
+\texttt{numpy} arrays. The problem is thereby Disciplined Parametrized
+Programming (DPP) compliant, which lets CVXPY canonicalize the problem
+\emph{once}. Subsequent solves patch new numeric values into the cached
+$(A, b, P, q)$ matrices and skip the DCP-to-cone reduction entirely.
+
+\paragraph{Auxiliary variable $w$.} The quadratic lower bound
+\begin{equation}
+  s_i \ge \mu_{1,i}\bigl(1 - (z_i - z_{0,i}) + \tfrac{1}{2}(z_i - z_{0,i})^2\bigr)
+\end{equation}
+is not DPP-compliant when written directly, because the square
+$(z_i - z_{0,i})^2$ would expand to \texttt{parameter*parameter} terms. The
+code introduces the auxiliary variable $w_i$ and the linear equality
+\begin{equation}
+  w_i \;=\; z_i - z_{0,i},
+\end{equation}
+so the quadratic is applied to a pure variable and remains DPP.
+
+\paragraph{2. Solver-level warm start (CLARABEL layer).} Passing
+\texttt{warm\_start=True} makes CVXPY invoke
+\texttt{\_solver.update(P, q, A, b, settings)} on the existing CLARABEL
+object rather than constructing a new one. This saves the sparse symbolic
+factorization and memory allocation. Note: CLARABEL is an interior-point
+method whose Python bindings do \emph{not} expose iterate-level warm-start,
+so the solver still restarts from its central-path initializer. The savings
+come from problem-construction overhead, not from reduced IPM iterations,
+and are therefore visible only in total wall-clock time --- not in
+\texttt{problem.solver\_stats.solve\_time}.
+
+\section{End-to-end algorithm}
+
+\begin{center}
+\begin{minipage}{0.92\textwidth}
+\begin{enumerate}
+  \item Compute $[\,t_f^{\min},\,t_f^{\max}\,]$ from
+        \eqref{eq:tfmin}--\eqref{eq:tfmax}.
+  \item Build the DPP-parametrized SOCP~\eqref{eq:inner} \emph{once}.
+  \item Initialize the golden-section bracket $a = t_f^{\min}$,
+        $b = t_f^{\max}$, place $x_1, x_2$ by \eqref{eq:gsspoints}, and
+        evaluate $f_1 = J(x_1)$, $f_2 = J(x_2)$ via the inner solver.
+  \item While $b - a > \texttt{tol}$: update the bracket
+        via~\eqref{eq:gssupdate}, performing exactly one new SOCP solve.
+  \item Return $\hat t_f^\star = \tfrac{1}{2}(a + b)$ and re-solve once at
+        $\hat t_f^\star$ to recover the full optimal trajectory.
+\end{enumerate}
+\end{minipage}
+\end{center}
+
+\section{Remarks}
+
+\paragraph{Why golden-section, not fminbnd?} The MATLAB reference uses
+\texttt{fminbnd}, which combines golden-section with parabolic interpolation.
+Parabolic interpolation can occasionally step outside the bracket when
+$J(t_f)$ is nearly flat near the optimum (as is typical for gravity-loss
+minima), forcing safeguards. Plain golden-section is monotone and
+guaranteed $\varphi^{-1}$ contraction per step, which matches well with the
+``one new solve per iteration'' reuse pattern.
+
+\paragraph{Tolerance choice.} The tolerance $\texttt{tol}=0.5\,\text{s}$ is
+coarser than machine precision by design: the curvature of $J$ near the
+optimum is small (sub-kg fuel difference per second of $t_f$), so tightening
+the tolerance below the SOCP solver's own optimality tolerance yields no
+meaningful improvement and only adds outer iterations.
+
+\paragraph{Infeasibility handling.} Both the \emph{a priori}
+check on \eqref{eq:nodeparams} and non-optimal solver statuses return
+$J(t_f) = +\infty$. Golden-section handles this correctly: infeasible
+candidates are simply ``worse than anything'', so the bracket contracts
+away from them in subsequent iterations.
+
+\end{document}
